@@ -1544,10 +1544,20 @@ Please run 'pip install -r python/requirements.txt' to make sure you have all th
         if dependency.lower() not in installed_packages:
             raise RuntimeError(missing_modules.format(dependency=dependency))
 
+def check_submodules():
+    for sub_dir in os.listdir(TOP_DIR + "/third_party"):
+        if not os.path.exists(TOP_DIR + "/third_party/" + sub_dir +
+                              "/.git"):
+            raise RuntimeError(
+                "Please run 'git submodule update --init --recursive' to make sure you have all the submodules installed."
+            )
 
 def main():
     # Parse the command line and check arguments before we proceed with building steps and setup
     parse_input_command(filter_args_list)
+
+    # check third_party submodules
+    check_submodules()
 
     # check build dependency
     check_build_dependency()
