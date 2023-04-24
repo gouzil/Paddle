@@ -52,11 +52,9 @@ CMakeSettings.json
 Makefile
 .test_env/
 .cache/
-third_party/
 
 *~
 bazel-*
-third_party/
 
 build_*
 # clion workspace.
