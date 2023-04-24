@@ -19,8 +19,6 @@ set(GLOG_INSTALL_DIR ${THIRD_PARTY_PATH}/install/glog)
 set(GLOG_INCLUDE_DIR
     "${GLOG_INSTALL_DIR}/include"
     CACHE PATH "glog include directory." FORCE)
-set(GLOG_REPOSITORY ${GIT_URL}/google/glog.git)
-set(GLOG_TAG v0.4.0)
 
 if(WIN32)
   set(GLOG_LIBRARIES
