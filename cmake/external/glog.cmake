@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+# https://github.com/google/glog/tree/v0.4.0
+
 include(ExternalProject)
 
 set(GLOG_PREFIX_DIR ${THIRD_PARTY_PATH}/glog)
