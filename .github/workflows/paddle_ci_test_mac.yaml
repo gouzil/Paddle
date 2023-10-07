@@ -24,7 +24,7 @@ jobs:
       - name: init system
         run: |
           brew update
-          brew install wget curl git make cmake bzip2 neofetch libffi libsqlite3
+          brew install wget curl git make cmake bzip2 neofetch libffi sqlite3
 
       - name: Build Python
         run: |
