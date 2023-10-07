@@ -24,7 +24,7 @@ jobs:
       - name: init system
         run: |
           brew update
-          brew install wget curl git make cmake bzip2 neofetch libffi sqlite3
+          brew install wget curl git make cmake bzip2 neofetch libffi sqlite3 openssl xz gdbm
 
       - name: Build Python
         run: |
@@ -60,7 +60,7 @@ jobs:
       - name: paddle build
         run: |
           cd build
-          ninja -j$(nproc)
+          ninja -j$(sysctl -n hw.ncpu)
 
       - name: paddle install
         run: |
