@@ -11,8 +11,8 @@ jobs:
       matrix:
         os: [ubuntu-22.04]
         python-version-with-wheel:
-          - ["3.8", " 3.8.18", "paddlepaddle-0.0.0-cp38-cp38-linux_x86_64.whl"]
-          - ["3.9", " 3.9.18", "paddlepaddle-0.0.0-cp39-cp39-linux_x86_64.whl"]
+          - ["3.8", "3.8.18", "paddlepaddle-0.0.0-cp38-cp38-linux_x86_64.whl"]
+          - ["3.9", "3.9.18", "paddlepaddle-0.0.0-cp39-cp39-linux_x86_64.whl"]
           - ["3.10", "3.10.12", "paddlepaddle-0.0.0-cp310-cp310-linux_x86_64.whl"]
           - ["3.11", "3.11.6", "paddlepaddle-0.0.0-cp311-cp311-linux_x86_64.whl"]
     runs-on: ${{ matrix.os }}
