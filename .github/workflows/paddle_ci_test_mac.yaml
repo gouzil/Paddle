@@ -31,7 +31,7 @@ jobs:
           wget --no-verbose https://www.python.org/ftp/python/${{ matrix.python-version-with-wheel[1] }}/Python-${{ matrix.python-version-with-wheel[1] }}.tgz
           tar -zvxf Python-${{ matrix.python-version-with-wheel[1] }}.tgz
           cd Python-${{ matrix.python-version-with-wheel[1] }}/
-          ./configure --enable-optimizations --enable-loadable-sqlite-extensions --with-ssl
+          ./configure --enable-optimizations --with-ssl
           make -j$(nproc)
           make install
 
