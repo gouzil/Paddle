@@ -65,7 +65,7 @@ jobs:
       - name: paddle install
         run: |
           cd build
-          python${{ matrix.python-version-with-wheel[0] }} -m pip install python/dist/${{matrix.python-version-with-wheel[1]}}
+          python${{ matrix.python-version-with-wheel[0] }} -m pip install python/dist/${{matrix.python-version-with-wheel[2]}}
 
       - name: paddle run check
         run: |
@@ -74,8 +74,8 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v3
         with:
-          name: ${{ matrix.python-version-with-wheel[1] }}
-          path: build/python/dist/${{ matrix.python-version-with-wheel[1] }}
+          name: ${{ matrix.python-version-with-wheel[2] }}
+          path: build/python/dist/${{ matrix.python-version-with-wheel[2] }}
 
       - name: run test
         run: |
