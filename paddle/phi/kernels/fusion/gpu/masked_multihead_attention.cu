@@ -22,36 +22,8 @@ namespace fusion {
 
 #ifndef PADDLE_WITH_HIP
 
-#define MMHA_USE_FP32_ACUM_FOR_LOGITS
-#define MMHA_USE_FP32_ACUM_FOR_OUT
-#define MMHA_USE_FP32_ACUM_FOR_FMA
-
-template <typename T>
-__device__ __inline__ T ClipFunc(const T v, const T min, const T max) {
-  if (v > max) return max;
-  if (v < min) return min;
-  return v;
-}
-
 constexpr unsigned int str2int(const char *str, int h = 0) {
   return !str[h] ? 5381 : (str2int(str, h + 1) * 33) ^ str[h];
-}
-
-template <typename InType, typename OutType>
-__forceinline__ __device__ OutType QuantHelperFunc(const InType input,
-                                                   const float scale,
-                                                   const int round_type,
-                                                   const float max_bound,
-                                                   const float min_bound) {
-  float quant_value = max_bound * scale * input;
-
-  if (round_type == 0) {
-    quant_value = static_cast<float>(rint(quant_value));
-  } else {
-    quant_value = static_cast<float>(round(quant_value));
-  }
-  return static_cast<OutType>(
-      ClipFunc<float>(quant_value, min_bound, max_bound));
 }
 
 template <typename T>
@@ -92,6 +64,9 @@ struct Masked_multihead_attention_params {
   int beam_width;
   int cache_batch_size;
   int num_head;
+  // k_num_head and v_num_head must be equal, we unify them.
+  // kv_num_head = k_num_head && kv_num_head == v_num_head
+  int kv_num_head;
   int timestep;  // cache_seq_length
   int seq_len;
   int max_seq_length;
@@ -102,258 +77,6 @@ struct Masked_multihead_attention_params {
   bool add_qkv_bias;
   bool neox_rotary_style;
 };
-
-#ifdef MMHA_USE_FP32_ACUM_FOR_FMA
-template <typename T>
-struct K_vec_acum_fp32_ {};
-
-template <>
-struct K_vec_acum_fp32_<uint32_t> {
-  using Type = float2;
-};
-#endif
-
-#ifdef MMHA_USE_FP32_ACUM_FOR_OUT
-template <typename T>
-struct V_vec_acum_fp32_ {};
-// template <> struct V_vec_acum_fp32_<float>  { using Type = float;  };
-// template <> struct V_vec_acum_fp32_<float2> { using Type = float2; };
-template <>
-struct V_vec_acum_fp32_<float4> {
-  using Type = float4;
-};
-// template <> struct V_vec_acum_fp32_<uint32_t> { using Type = float2;   };
-// template <> struct V_vec_acum_fp32_<uint2   > { using Type = Float4_;  };
-template <>
-struct V_vec_acum_fp32_<uint4> {
-  using Type = Float8_;
-};
-
-#ifdef ENABLE_BF16
-template <>
-struct V_vec_acum_fp32_<__nv_bfloat162> {
-  using Type = float2;
-};
-template <>
-struct V_vec_acum_fp32_<bf16_4_t> {
-  using Type = Float4_;
-};
-template <>
-struct V_vec_acum_fp32_<bf16_8_t> {
-  using Type = Float8_;
-};
-#endif  // ENABLE_BF16
-
-#endif
-
-// clang-format on
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-template <int THREADS_PER_KEY, typename K_vec, int N>
-inline __device__ float qk_dot_(const K_vec (&q)[N],
-                                const K_vec (&k)[N],
-                                float inv_sqrt_dh) {
-  K_vec inv_q = mul<K_vec, K_vec, float>(q[0], inv_sqrt_dh);
-  K_vec qk_vec = mul<K_vec, K_vec, K_vec>(inv_q, k[0]);
-#pragma unroll
-  for (int ii = 1; ii < N; ++ii) {
-    inv_q = mul<K_vec, K_vec, float>(q[ii], inv_sqrt_dh);
-    qk_vec = fma(inv_q, k[ii], qk_vec);
-  }
-
-  float qk = sum(qk_vec);
-#pragma unroll
-  for (int mask = THREADS_PER_KEY / 2; mask >= 1; mask /= 2) {
-    qk += __shfl_xor_sync(uint32_t(-1), qk, mask);
-  }
-  return qk;
-}
-
-inline __device__ float4 hmma_fp32_tensorcore(const uint2 &a, uint32_t b) {
-  float4 c;
-  float zero = 0.f;
-  asm volatile(
-      "mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 \n"
-      "    {%0, %1, %2, %3}, \n"
-      "    {%4, %5}, \n"
-      "    {%6}, \n"
-      "    {%7, %7, %7, %7}; \n"
-
-      : "=f"(c.x), "=f"(c.y), "=f"(c.z), "=f"(c.w)
-      : "r"(a.x) "r"(a.y), "r"(b), "f"(zero));
-  return c;
-}
-
-template <int N>
-inline __device__ float qk_hmma_dot_(const uint32_t (&q)[N],
-                                     const uint32_t (&k)[N],
-                                     float inv_sqrt_dh) {
-#if defined(MMHA_USE_HMMA_FOR_REDUCTION) && defined(__CUDA_ARCH__) && \
-    __CUDA_ARCH__ >= 750
-#ifdef MMHA_USE_FP32_ACUM_FOR_FMA
-  using K_vec_acum = typename K_vec_acum_fp32_<uint32_t>::Type;
-#else
-  using K_vec_acum = uint32_t;
-#endif
-  K_vec_acum inv_q = mul<K_vec_acum, uint32_t, float>(q[0], inv_sqrt_dh);
-  K_vec_acum qk_vec = mul<K_vec_acum, K_vec_acum, uint32_t>(inv_q, k[0]);
-#pragma unroll
-  for (int ii = 1; ii < N; ++ii) {
-    inv_q = mul<K_vec_acum, uint32_t, float>(q[ii], inv_sqrt_dh);
-    qk_vec = fma(inv_q, k[ii], qk_vec);
-  }
-#ifdef MMHA_USE_FP32_ACUM_FOR_FMA
-  uint32_t qk_vec_ = float2_to_half2(qk_vec);
-  return hmma_fp32_tensorcore(make_uint2(qk_vec_, 0u), 0x3c003c00u).x;
-#else
-  return hmma_fp32_tensorcore(make_uint2(qk_vec, 0u), 0x3c003c00u).x;
-#endif
-#else
-  return 0.f;
-#endif
-}
-
-template <typename T, int THREADS_PER_KEY>
-struct Qk_dot {
-  template <typename K_vec, int N>
-  static inline __device__ float dot(const K_vec (&q)[N],
-                                     const K_vec (&k)[N],
-                                     float inv_sqrt_dh) {
-    return qk_dot_<THREADS_PER_KEY>(q, k, inv_sqrt_dh);
-  }
-};
-
-template <>
-struct Qk_dot<float16, 4> {
-  template <int N>
-  static inline __device__ float dot(const uint32_t (&q)[N],
-                                     const uint32_t (&k)[N],
-                                     float inv_sqrt_dh) {
-#if defined(MMHA_USE_HMMA_FOR_REDUCTION) && defined(__CUDA_ARCH__) && \
-    __CUDA_ARCH__ >= 750
-    return qk_hmma_dot_(q, k, inv_sqrt_dh);
-#else
-    return qk_dot_<4>(q, k, inv_sqrt_dh);
-#endif
-  }
-};
-
-template <int WARPS_PER_BLOCK, int WARP_SIZE = 32>
-inline __device__ float block_sum(float *red_smem, float sum) {
-  int warp = threadIdx.x / WARP_SIZE;
-  int lane = threadIdx.x % WARP_SIZE;
-
-#pragma unroll
-  for (int mask = WARP_SIZE / 2; mask >= 1; mask /= 2) {
-    sum += __shfl_xor_sync(uint32_t(-1), sum, mask);
-  }
-
-  if (lane == 0) {
-    red_smem[warp] = sum;
-  }
-  __syncthreads();
-
-  if (lane < WARPS_PER_BLOCK) {
-    sum = red_smem[lane];
-  }
-
-#pragma unroll
-  for (int mask = WARPS_PER_BLOCK / 2; mask >= 1; mask /= 2) {
-    sum += __shfl_xor_sync(uint32_t(-1), sum, mask);
-  }
-
-  return __shfl_sync(uint32_t(-1), sum, 0);
-}
-
-inline __device__ void convert_from_float(float &dst, float src) {  // NOLINT
-  dst = src;
-}
-
-inline __device__ void convert_from_float(float4 &dst, float4 src) {  // NOLINT
-  dst = src;
-}
-
-inline __device__ void convert_from_float(phi::float16 &dst,  // NOLINT
-                                          float src) {
-  dst = static_cast<phi::float16>(src);
-}
-
-inline __device__ void convert_from_float(uint4 &dst, Float8_ src) {  // NOLINT
-  dst.x = float2_to_half2(src.x);
-  dst.y = float2_to_half2(src.y);
-  dst.z = float2_to_half2(src.z);
-  dst.w = float2_to_half2(src.w);
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-#ifdef ENABLE_BF16
-inline __device__ void convert_from_float(__nv_bfloat16 &dst,  // NOLINT
-                                          float src) {         // NOLINT
-  dst = __float2bfloat16(src);
-}
-
-inline __device__ void convert_from_float(__nv_bfloat162 &dst,  // NOLINT
-                                          float2 src) {         // NOLINT
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
-  dst = __float22bfloat162_rn(src);
-#else
-  dst = __floats2bfloat162_rn(src.x, src.y);
-#endif
-}
-
-inline __device__ void convert_from_float(bf16_4_t &dst,  // NOLINT
-                                          Float4_ src) {  // NOLINT
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
-  dst.x = __float22bfloat162_rn(src.x);
-  dst.y = __float22bfloat162_rn(src.y);
-#else
-  dst.x = __floats2bfloat162_rn(src.x.x, src.x.y);
-  dst.y = __floats2bfloat162_rn(src.y.x, src.y.y);
-#endif
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-inline __device__ void convert_from_float(bf16_4_t &dst,  // NOLINT
-                                          float4 src) {   // NOLINT
-  convert_from_float(
-      dst, Float4_{make_float2(src.x, src.y), make_float2(src.z, src.w)});
-}
-
-inline __device__ void convert_from_float(bf16_8_t &dst,  // NOLINT
-                                          Float8_ src) {  // NOLINT
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
-  dst.x = __float22bfloat162_rn(src.x);
-  dst.y = __float22bfloat162_rn(src.y);
-  dst.z = __float22bfloat162_rn(src.z);
-  dst.w = __float22bfloat162_rn(src.w);
-#else
-  dst.x = __floats2bfloat162_rn(src.x.x, src.x.y);
-  dst.y = __floats2bfloat162_rn(src.y.x, src.y.y);
-  dst.z = __floats2bfloat162_rn(src.z.x, src.z.y);
-  dst.w = __floats2bfloat162_rn(src.w.x, src.w.y);
-#endif
-}
-#endif  // ENABLE_BF16
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-inline __device__ void zero(uint16_t &dst) { dst = uint16_t(0); }  // NOLINT
-
-template <typename T>
-inline __device__ void zero(T &dst) {  // NOLINT
-  constexpr int WORDS = sizeof(T) / 4;
-  union {
-    T raw;
-    uint32_t words[WORDS];
-  } tmp;
-#pragma unroll
-  for (int ii = 0; ii < WORDS; ++ii) {
-    tmp.words[ii] = 0u;
-  }
-  dst = tmp.raw;
-}
 
 template <typename T,
           int Dh,
@@ -403,6 +126,14 @@ __global__ void masked_multihead_attention_kernel(
   const int bbi = bi / params.beam_width;
   const int hi = blockIdx.x;
   const int bhi = bi * params.num_head + hi;
+
+  const int kv_num_head = params.kv_num_head;
+  const int num_head_per_group = params.num_head / kv_num_head;
+  // hi means the head index in query processed by this cuda thread.
+  // kv_bhi means the merged batch and head index in key and value processed by
+  // this cuda thread.
+  const int kv_bhi = bi * kv_num_head + hi / num_head_per_group;
+
   const int bbhi = bbi * params.beam_width * params.num_head + hi;
   const int ti =
       params.cum_offsets ? bi * params.seq_len - params.cum_offsets[bi] : -1;
@@ -418,8 +149,9 @@ __global__ void masked_multihead_attention_kernel(
                           ? params.timestep
                           : params.sequence_lengths[bi];
 
-  // qkv [B, S=1, 3, num_head, head_dim]
-  int qkv_base_offset = bi * 3 * params.num_head * Dh + hi * Dh;
+  // qkv [B, S=1, num_head + 2 * kv_num_head, head_dim]
+  // this hi means the head index in query!
+  int qkv_base_offset = bi * (params.num_head + 2 * kv_num_head) * Dh + hi * Dh;
 
   constexpr int QK_VEC_SIZE = sizeof(Qk_vec) / sizeof(T);
   static_assert(Dh_MAX % QK_VEC_SIZE == 0, "");
@@ -444,7 +176,8 @@ __global__ void masked_multihead_attention_kernel(
 
   if (tid < QK_VECS_PER_WARP) {
     int qk_offset = qkv_base_offset + tid * QK_VEC_SIZE;
-    int qk_bias_offset = hi * Dh + tid * QK_VEC_SIZE;
+    int q_bias_offset = hi * Dh + tid * QK_VEC_SIZE;
+    int k_bias_offset = hi / num_head_per_group * Dh + tid * QK_VEC_SIZE;
 
     Qk_vec q;
     zero(q);
@@ -461,7 +194,10 @@ __global__ void masked_multihead_attention_kernel(
     //         ? *reinterpret_cast<const Qk_vec *>(&k_base[qk_offset])
     //         : k;
     if (Dh == Dh_MAX || tid * QK_VEC_SIZE < Dh) {
-      load_func.template load<Qk_vec>(k, params.num_head * Dh + qk_offset);
+      load_func.template load<Qk_vec>(k,
+                                      params.num_head * Dh + qk_offset -
+                                          hi * Dh +
+                                          hi / num_head_per_group * Dh);
     }
 
     if (params.add_qkv_bias) {
@@ -472,11 +208,11 @@ __global__ void masked_multihead_attention_kernel(
 
       q_bias =
           (Dh == Dh_MAX || tid * QK_VEC_SIZE < Dh)
-              ? *reinterpret_cast<const Qk_vec *>(&q_bias_base[qk_bias_offset])
+              ? *reinterpret_cast<const Qk_vec *>(&q_bias_base[q_bias_offset])
               : q_bias;
       k_bias =
           (Dh == Dh_MAX || tid * QK_VEC_SIZE < Dh)
-              ? *reinterpret_cast<const Qk_vec *>(&k_bias_base[qk_bias_offset])
+              ? *reinterpret_cast<const Qk_vec *>(&k_bias_base[k_bias_offset])
               : k_bias;
 
       q = add(q, q_bias);
@@ -516,7 +252,9 @@ __global__ void masked_multihead_attention_kernel(
         int right_id = tid / stride_all_lastdim * stride_all_lastdim +
                        (tid + stride) % (stride_all_lastdim);
         int qk_right_offset = qkv_base_offset + right_id * QK_VEC_SIZE;
-        int qk_right_bias_offset = hi * Dh + right_id * QK_VEC_SIZE;
+        int q_right_bias_offset = hi * Dh + right_id * QK_VEC_SIZE;
+        int k_right_bias_offset =
+            hi / num_head_per_group * Dh + right_id * QK_VEC_SIZE;
         Qk_vec q_right;
         zero(q_right);
         // q_right =
@@ -533,8 +271,10 @@ __global__ void masked_multihead_attention_kernel(
         //         ? *reinterpret_cast<const Qk_vec *>(&k_base[qk_right_offset])
         //         : k_right;
         if (Dh == Dh_MAX || right_id * QK_VEC_SIZE < Dh) {
-          load_func.template load<Qk_vec>(
-              k_right, params.num_head * Dh + qk_right_offset);
+          load_func.template load<Qk_vec>(k_right,
+                                          params.num_head * Dh +
+                                              qk_right_offset - hi * Dh +
+                                              hi / num_head_per_group * Dh);
         }
 
         if (params.add_qkv_bias) {
@@ -542,13 +282,13 @@ __global__ void masked_multihead_attention_kernel(
           zero(q_right_bias);
           q_right_bias = (Dh == Dh_MAX || right_id * QK_VEC_SIZE < Dh)
                              ? *reinterpret_cast<const Qk_vec *>(
-                                   &q_bias_base[qk_right_bias_offset])
+                                   &q_bias_base[q_right_bias_offset])
                              : q_right_bias;
           Qk_vec k_right_bias;
           zero(k_right_bias);
           k_right_bias = (Dh == Dh_MAX || right_id * QK_VEC_SIZE < Dh)
                              ? *reinterpret_cast<const Qk_vec *>(
-                                   &k_bias_base[qk_right_bias_offset])
+                                   &k_bias_base[k_right_bias_offset])
                              : k_right_bias;
 
           q_right = add(q_right, q_right_bias);
@@ -582,7 +322,7 @@ __global__ void masked_multihead_attention_kernel(
 
     int co = tid / QK_VECS_IN_16B;
     int ci = (tid % QK_VECS_IN_16B) * QK_VEC_SIZE;
-    int offset = bhi * params.max_seq_length * Dh +
+    int offset = kv_bhi * params.max_seq_length * Dh +
                  co * params.max_seq_length * QK_ELTS_IN_16B +
                  act_time_step * QK_ELTS_IN_16B + ci;
     if (Dh == Dh_MAX || co < Dh / QK_ELTS_IN_16B) {
@@ -640,7 +380,7 @@ __global__ void masked_multihead_attention_kernel(
   constexpr int K_PER_ITER = THREADS_PER_BLOCK / THREADS_PER_KEY;
   constexpr int K_PER_WARP = WARP_SIZE / THREADS_PER_KEY;
 
-  T *k_cache = &params.cache_kv[bhi * params.max_seq_length * Dh + ki];
+  T *k_cache = &params.cache_kv[kv_bhi * params.max_seq_length * Dh + ki];
   T *k_cache_batch = &params.cache_kv[bbhi * params.max_seq_length * Dh + ki];
   int ti_end = div_up(act_time_step, K_PER_WARP) * K_PER_WARP;
 
@@ -737,12 +477,20 @@ __global__ void masked_multihead_attention_kernel(
   constexpr int V_VEC_SIZE = Dh_MAX / THREADS_PER_VALUE;
   using V_vec = typename V_vec_<T, V_VEC_SIZE>::Type;
 
+  // now we have got [1, seq] ，distributed in logits_smem.
+  // next we compute [1, seq] * [seq, head_dim] = [1, head_dim]
+  // THREADS_PER_VALUE means num of threads per value's head_dim.
+  // we split the seq dimension for more cuda threads to compute.
+  // vo means the first seq index processed by this cuda thread in the value.
+  // vi means the head_dim index processed by this cuda thread in the value.
+  // so this cuda thread compute [1, k] * [k, vi:vi+V_VEC_SIZE] and k starts
+  // from vo and increases by a step V_PER_ITER.
   int vo = tid / THREADS_PER_VALUE;
   int vi = (tid % THREADS_PER_VALUE) * V_VEC_SIZE;
 
-  T *v_cache = &params.cache_kv[params.cache_batch_size * params.num_head *
+  T *v_cache = &params.cache_kv[params.cache_batch_size * kv_num_head *
                                     params.max_seq_length * Dh +
-                                bhi * params.max_seq_length * Dh + vi];
+                                kv_bhi * params.max_seq_length * Dh + vi];
   T *v_cache_batch = &params.cache_kv[params.batch_size * params.num_head *
                                           params.max_seq_length * Dh +
                                       bbhi * params.max_seq_length * Dh + vi];
@@ -755,7 +503,7 @@ __global__ void masked_multihead_attention_kernel(
 
   V_vec_acum out;
   zero(out);
-
+  // V_PER_ITER is used to strip-mined the seq dimension.
   constexpr int V_PER_ITER = THREADS_PER_BLOCK / THREADS_PER_VALUE;
   if (Dh == Dh_MAX || vi < Dh) {
     for (int ti = vo; ti < act_time_step; ti += V_PER_ITER) {
@@ -783,15 +531,19 @@ __global__ void masked_multihead_attention_kernel(
 
   V_vec v_bias;
   zero(v_bias);
+  // now we process the last v.
   if (vo == (act_time_step % V_PER_ITER) && (Dh == Dh_MAX || vi < Dh)) {
     // V_vec v = *reinterpret_cast<const V_vec *>(
     //     &params.qkv[2 * params.num_head * Dh + qkv_base_offset + vi]);
     V_vec v;
-    load_func.template load<V_vec>(
-        v, 2 * params.num_head * Dh + qkv_base_offset + vi);
+    load_func.template load<V_vec>(v,
+                                   qkv_base_offset + vi - hi * Dh +
+                                       params.num_head * Dh + kv_num_head * Dh +
+                                       hi / num_head_per_group * Dh);
     if (params.add_qkv_bias) {
       v_bias = *reinterpret_cast<const V_vec *>(
-          &params.qkv_bias[2 * params.num_head * Dh + hi * Dh + vi]);
+          &params.qkv_bias[(kv_num_head + params.num_head) * Dh +
+                           hi / num_head_per_group * Dh + vi]);
       v = add(v, v_bias);
     }
 
@@ -806,6 +558,7 @@ __global__ void masked_multihead_attention_kernel(
 
   __syncthreads();
 
+  // now we do the reduction in the seq dimension to get [1, head_dim].
   if (Dh == Dh_MAX || vi < Dh) {
 #pragma unroll
     for (int active_groups = V_PER_ITER; active_groups >= 2;
@@ -830,6 +583,7 @@ __global__ void masked_multihead_attention_kernel(
     }
   }
 
+  // write the [1, head_dim] result back to global memory.
   if (vo == 0 && (Dh == Dh_MAX || vi < Dh)) {
 #ifdef MMHA_USE_FP32_ACUM_FOR_OUT
     // convert_from_float(*reinterpret_cast<V_vec *>(&params.out[bhi * Dh +
@@ -992,193 +746,6 @@ void fmha_impl(const phi::GPUContext &dev_ctx,
   }
 }
 
-template <typename T, typename LoadT = T>
-struct MMHALoad {
-  explicit MMHALoad(const LoadT *src) : src_(src) {}
-
-  template <typename Vec>
-  __device__ void load(Vec &dst, int idx) {
-    dst = *reinterpret_cast<const Vec *>(src_ + idx);
-  }
-
-  const LoadT *src_;
-};
-
-template <typename T, typename StoreT = T, bool Smooth = false>
-struct MMHAStore {
-  explicit MMHAStore(StoreT *dst) : dst_(dst) {}
-
-  template <typename Vec>
-  __device__ void store(Vec &src, int idx) {
-    *reinterpret_cast<Vec *>(dst_ + idx) = src;
-  }
-
-  StoreT *dst_;
-};
-
-template <typename T>
-struct MMHAStore<T, T, true> {
-  MMHAStore(T *dst, const T *shift, const T *smooth, const int cols)
-      : dst_(dst), shift_(shift), smooth_(smooth), cols_(cols) {}
-
-  template <typename Vec>
-  __device__ void store(Vec &src, int idx) {
-    constexpr int VecSize = sizeof(Vec) / sizeof(T);
-    using TVec = phi::AlignedVector<T, VecSize>;
-    TVec src_vec;
-    TVec shift_vec;
-    TVec smooth_vec;
-
-    *reinterpret_cast<Vec *>(&src_vec) = src;
-    phi::Load<T, VecSize>(shift_ + idx % cols_, &shift_vec);
-    phi::Load<T, VecSize>(smooth_ + idx % cols_, &smooth_vec);
-
-#pragma unroll
-    for (int i = 0; i < VecSize; i++) {
-      src_vec[i] = (src_vec[i] + shift_vec[i]) * smooth_vec[i];
-    }
-
-    phi::Store<T, VecSize>(src_vec, dst_ + idx);
-  }
-
-  T *dst_;
-  const T *shift_;
-  const T *smooth_;
-  const int cols_;
-};
-
-template <typename T>
-struct MMHALoad<T, int32_t> {
-  MMHALoad(const int32_t *src, const float *dequant_scales, const int cols)
-      : src_(src), dequant_scales_(dequant_scales), cols_(cols) {}
-
-  template <typename Vec>
-  __device__ void load(Vec &dst, int idx) {
-    constexpr int VecSize = sizeof(Vec) / sizeof(T);
-    using SrcVec = phi::AlignedVector<int32_t, VecSize>;
-    using DstVec = phi::AlignedVector<T, VecSize>;
-    using ScaleVec = phi::AlignedVector<float, VecSize>;
-
-    SrcVec src_vec;
-    DstVec dst_vec;
-    ScaleVec scale_vec;
-
-    phi::Load<int32_t, VecSize>(src_ + idx, &src_vec);
-    phi::Load<float, VecSize>(dequant_scales_ + idx % cols_, &scale_vec);
-#pragma unroll
-    for (int i = 0; i < VecSize; i++) {
-      dst_vec[i] =
-          static_cast<T>(static_cast<float>(src_vec[i]) * scale_vec[i]);
-    }
-    dst = *reinterpret_cast<Vec *>(&dst_vec);
-  }
-
-  const int32_t *src_;
-  const float *dequant_scales_;
-  const int cols_;
-};
-
-template <typename T>
-struct MMHAStore<T, int8_t> {
-  MMHAStore(int8_t *dst,
-            const int quant_round_type,
-            const float quant_scale,
-            const float quant_max_bound,
-            const float quant_min_bound)
-      : dst_(dst),
-        quant_round_type_(quant_round_type),
-        quant_scale_(quant_scale),
-        quant_max_bound_(quant_max_bound),
-        quant_min_bound_(quant_min_bound) {}
-
-  template <typename Vec>
-  __device__ void store(Vec &src, int idx) {  // NOLINT
-    constexpr int VecSize = sizeof(Vec) / sizeof(T);
-    using SrcVec = phi::AlignedVector<T, VecSize>;
-    using DstVec = phi::AlignedVector<int8_t, VecSize>;
-
-    SrcVec src_vec;
-    *reinterpret_cast<Vec *>(&src_vec) = src;
-
-    DstVec dst_vec;
-#pragma unroll
-    for (int i = 0; i < VecSize; i++) {
-      dst_vec[i] =
-          QuantHelperFunc<float, int8_t>(static_cast<float>(src_vec[i]),
-                                         quant_scale_,
-                                         quant_round_type_,
-                                         quant_max_bound_,
-                                         quant_min_bound_);
-    }
-
-    phi::Store<int8_t, VecSize>(dst_vec, dst_ + idx);
-  }
-
-  int8_t *dst_;
-  const int quant_round_type_;
-  const float quant_scale_;
-  const float quant_max_bound_;
-  const float quant_min_bound_;
-};
-
-template <typename T>
-struct MMHAStore<T, int8_t, true> {
-  MMHAStore(int8_t *dst,
-            const T *shift,
-            const T *smooth,
-            const int cols,
-            const int quant_round_type,
-            const float quant_scale,
-            const float quant_max_bound,
-            const float quant_min_bound)
-      : dst_(dst),
-        quant_round_type_(quant_round_type),
-        quant_scale_(quant_scale),
-        quant_max_bound_(quant_max_bound),
-        quant_min_bound_(quant_min_bound),
-        shift_(shift),
-        smooth_(smooth),
-        cols_(cols) {}
-
-  template <typename Vec>
-  __device__ void store(Vec &src, int idx) {  // NOLINT
-    constexpr int VecSize = sizeof(Vec) / sizeof(T);
-    using SrcVec = phi::AlignedVector<T, VecSize>;
-    using DstVec = phi::AlignedVector<int8_t, VecSize>;
-
-    SrcVec src_vec;
-    DstVec dst_vec;
-    SrcVec shift_vec;
-    SrcVec smooth_vec;
-
-    *reinterpret_cast<Vec *>(&src_vec) = src;
-    phi::Load<T, VecSize>(shift_ + idx % cols_, &shift_vec);
-    phi::Load<T, VecSize>(smooth_ + idx % cols_, &smooth_vec);
-
-#pragma unroll
-    for (int i = 0; i < VecSize; i++) {
-      src_vec[i] = (src_vec[i] + shift_vec[i]) * smooth_vec[i];
-      dst_vec[i] =
-          QuantHelperFunc<float, int8_t>(static_cast<float>(src_vec[i]),
-                                         quant_scale_,
-                                         quant_round_type_,
-                                         quant_max_bound_,
-                                         quant_min_bound_);
-    }
-
-    phi::Store<int8_t, VecSize>(dst_vec, dst_ + idx);
-  }
-
-  int8_t *dst_;
-  const T *shift_;
-  const T *smooth_;
-  const int cols_;
-  const int quant_round_type_;
-  const float quant_scale_;
-  const float quant_max_bound_;
-  const float quant_min_bound_;
-};
-
 template <typename T>
 void DispatchFMHA(const phi::GPUContext &dev_ctx,
                   const phi::DenseTensor &qkv_tensor,
@@ -1319,11 +886,16 @@ void DispatchWithDtype(const Context &dev_ctx,
   const auto &x_dims = x.dims();
   int bsz = x_dims[0];
   int cache_bsz = cache_kv.dims()[1];
-  int num_head = cache_kv.dims()[2];
   int max_seq_len = cache_kv.dims()[3];
   int dim_head = cache_kv.dims()[4];
   int timestep = max_seq_len;
   float inv_sqrt_dh = 1. / sqrt(dim_head);
+
+  int k_num_head = cache_kv.dims()[2];
+  int v_num_head = k_num_head;
+  // this num_head means query's head
+  int num_head =
+      x.dims()[x.dims().size() - 1] / dim_head - k_num_head - v_num_head;
 
   Masked_multihead_attention_params<T> params;
   bool mask_broadcast_num_heads = true;
@@ -1385,6 +957,7 @@ void DispatchWithDtype(const Context &dev_ctx,
   params.batch_size = bsz;
   params.cache_batch_size = cache_bsz;
   params.num_head = num_head;
+  params.kv_num_head = k_num_head;
   params.timestep = timestep;
   params.seq_len = seq_len;
   params.max_seq_length = max_seq_len;
