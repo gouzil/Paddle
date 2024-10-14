@@ -32,7 +32,7 @@ limitations under the License. */
 #define _PyGC_FINALIZED
 #endif
 
-#include <internal/pycore_opcode.h>
+// #include <internal/pycore_opcode.h>
 #undef NEED_OPCODE_TABLES
 #undef Py_BUILD_CORE
 #include <opcode.h>

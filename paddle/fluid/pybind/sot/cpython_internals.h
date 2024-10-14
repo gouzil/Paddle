@@ -24,6 +24,9 @@ extern "C" {
 #if SOT_IS_SUPPORTED
 
 #if PY_VERSION_HEX >= 0x030b0000
+#if PY_VERSION_HEX >= 0x030d0000
+#define Py_BUILD_CORE
+#endif
 #include <internal/pycore_frame.h>
 #endif
 
@@ -49,6 +52,14 @@ _PyInterpreterFrame *Internal_PyThreadState_PushFrame(PyThreadState *tstate,
                                                       size_t size);
 void Internal_PyFrame_ClearExceptCode(_PyInterpreterFrame *frame);
 #endif
+
+// #if PY_VERSION_HEX >= 0x030d0000
+// static inline PyCodeObject *Internal_PyFrame_GetCode(_PyInterpreterFrame *f)
+// {
+//     assert(PyCode_Check(f->f_executable));
+//     return (PyCodeObject *)f->f_executable;
+// }
+// #endif
 
 #endif
 

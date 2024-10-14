@@ -20,7 +20,7 @@ extern "C" {
 
 #include <Python.h>
 
-#define SOT_NOT_SUPPORTED_VERSION 0x030d0000
+#define SOT_NOT_SUPPORTED_VERSION 0x030e0000
 #define SOT_IS_SUPPORTED PY_VERSION_HEX < SOT_NOT_SUPPORTED_VERSION
 
 #ifdef __cplusplus

@@ -62,7 +62,11 @@ typedef struct PyInterpreterFrameProxy {
   { #name, (getter)PyInterpreterFrameProxy_property_##name, NULL, NULL, NULL }
 // clang-format on
 
+#if PY_VERSION_HEX >= 0x030d0000
+DECLARE_PROXY_PROPERTY(f_executable)
+#else
 DECLARE_PROXY_PROPERTY(f_code)
+#endif
 DECLARE_PROXY_PROPERTY(f_locals)
 DECLARE_PROXY_PROPERTY(f_globals)
 DECLARE_PROXY_PROPERTY(f_builtins)
@@ -82,7 +86,11 @@ static PyObject *PyInterpreterFrameProxy_method_repr(
 }
 
 static PyGetSetDef PyInterpreterFrameProxy_properties[] = {
+#if PY_VERSION_HEX >= 0x030d0000
+    REGISTER_PROXY_PROPERTY(f_executable),
+#else
     REGISTER_PROXY_PROPERTY(f_code),
+#endif
     REGISTER_PROXY_PROPERTY(f_locals),
     REGISTER_PROXY_PROPERTY(f_globals),
     REGISTER_PROXY_PROPERTY(f_builtins),

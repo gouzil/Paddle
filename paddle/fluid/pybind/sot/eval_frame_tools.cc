@@ -213,7 +213,11 @@ void CodeStatus::clear() {
 
 int need_skip(FrameObject* frame) {
   auto& skip_info = SkipCodeInfo::Instance();
+#if PY_VERSION_HEX >= 0x30d0000
+  PyCodeObject* code = _PyFrame_GetCode(frame);
+#else
   PyCodeObject* code = frame->f_code;  // NOLINT
+#endif
   PyObject* co_filename = code->co_filename;
 
   if (skip_info.is_no_skip_code(code)) {
