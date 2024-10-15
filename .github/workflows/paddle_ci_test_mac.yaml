@@ -1,0 +1,83 @@
+name: Paddle ci test mac
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  Build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-13]
+        python-version-with-wheel:
+          - ["3.8", "3.8.18", "paddlepaddle-0.0.0-cp38-cp38-macosx_13_6_x86_64.whl"]
+          - ["3.9", "3.9.18", "paddlepaddle-0.0.0-cp39-cp39-macosx_13_6_x86_64.whl"]
+          - ["3.10", "3.10.12", "paddlepaddle-0.0.0-cp310-cp310-macosx_13_6_x86_64.whl"]
+          - ["3.11", "3.11.6", "paddlepaddle-0.0.0-cp311-cp311-macosx_13_6_x86_64.whl"]
+    runs-on: ${{ matrix.os }}
+    name: macos-py${{ matrix.python-version-with-wheel[0] }}-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: init system
+        run: |
+          brew update
+          brew install wget curl git make cmake bzip2 neofetch libffi sqlite3 openssl xz gdbm
+
+      - name: Build Python
+        run: |
+          wget --no-verbose https://www.python.org/ftp/python/${{ matrix.python-version-with-wheel[1] }}/Python-${{ matrix.python-version-with-wheel[1] }}.tgz
+          tar -zvxf Python-${{ matrix.python-version-with-wheel[1] }}.tgz
+          cd Python-${{ matrix.python-version-with-wheel[1] }}/
+          ./configure --enable-optimizations --with-ssl
+          make -j$(nproc)
+          make install
+
+      - name: install pip packages
+        run: |
+          python${{ matrix.python-version-with-wheel[0] }} -m pip install --upgrade pip
+          python${{ matrix.python-version-with-wheel[0] }} -m pip install wheel pyyaml ninja
+          python${{ matrix.python-version-with-wheel[0] }} -m pip install -r python/requirements.txt
+
+      - name: get env
+        run: |
+          python${{ matrix.python-version-with-wheel[0] }} -m pip install distro
+          echo "---------------------- tools/summary_env.py ---------------------------"
+          python${{ matrix.python-version-with-wheel[0] }} tools/summary_env.py
+          echo "-------------------------- neofetch ---------------------------"
+          neofetch
+          echo "------------------------ pip list -----------------------------"
+          pip list
+
+      - name: run cmake
+        run: |
+          mkdir build
+          cd build
+          cmake .. -GNinja -DPY_VERSION=${{ matrix.python-version-with-wheel[0] }} -DWITH_GPU=OFF -DWITH_TESTING=ON
+
+      - name: paddle build
+        run: |
+          cd build
+          ninja -j$(sysctl -n hw.ncpu)
+
+      - name: paddle install
+        run: |
+          cd build
+          python${{ matrix.python-version-with-wheel[0] }} -m pip install python/dist/${{matrix.python-version-with-wheel[2]}}
+
+      - name: paddle run check
+        run: |
+          python${{ matrix.python-version-with-wheel[0] }} -c "import paddle; paddle.utils.run_check()"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.python-version-with-wheel[2] }}
+          path: build/python/dist/${{ matrix.python-version-with-wheel[2] }}
+
+      - name: run test
+        run: |
+          cd build
+          ctest
