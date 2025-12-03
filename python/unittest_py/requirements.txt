@@ -21,3 +21,4 @@ soundfile
 apache-tvm-ffi==0.1.2
 graphviz
 nvidia-ml-py3 ; platform_system != "Darwin"
+werkzeug>=3.1.4 # not directly required, pinned by Snyk to avoid a vulnerability
