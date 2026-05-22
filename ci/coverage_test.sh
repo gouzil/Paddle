@@ -53,8 +53,18 @@ source $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/utils.sh
 init
 
 PY_VERSION=${PY_VERSION:-3.12}
-ln -sf $(which python${PY_VERSION}) /usr/local/bin/python
-ln -sf $(which pip${PY_VERSION}) /usr/local/bin/pip
+PYTHON_BIN=$(command -v "python${PY_VERSION}" || true)
+PIP_BIN=$(command -v "pip${PY_VERSION}" || true)
+if [[ -z "${PYTHON_BIN}" ]]; then
+    echo "Error: python${PY_VERSION} executable is required but was not found in PATH." >&2
+    exit 1
+fi
+if [[ -z "${PIP_BIN}" ]]; then
+    echo "Error: pip${PY_VERSION} executable is required but was not found in PATH." >&2
+    exit 1
+fi
+ln -sf "${PYTHON_BIN}" /usr/local/bin/python
+ln -sf "${PIP_BIN}" /usr/local/bin/pip
 
 echo "::group::Install zstd"
 apt install zstd -y
