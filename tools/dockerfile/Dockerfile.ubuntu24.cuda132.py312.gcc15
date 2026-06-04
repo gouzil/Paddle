@@ -1,0 +1,105 @@
+# A standalone image for validating Paddle with Ubuntu 24.04, CUDA 13.2,
+# Python 3.12, and GCC 15.
+FROM nvcr.io/nvidia/cuda:13.2.0-cudnn-devel-ubuntu24.04
+LABEL maintainer="PaddlePaddle Authors <paddle-dev@baidu.com>"
+
+ARG WITH_GPU
+ARG WITH_AVX
+
+ENV WITH_GPU=${WITH_GPU:-ON}
+ENV WITH_AVX=${WITH_AVX:-ON}
+ENV DEBIAN_FRONTEND=noninteractive
+ENV HOME=/root
+
+RUN chmod 777 /tmp
+
+RUN apt-get update --allow-unauthenticated && \
+    apt-get install -y --no-install-recommends \
+      autoconf \
+      automake \
+      bison \
+      build-essential \
+      ca-certificates \
+      ccache \
+      cmake \
+      coreutils \
+      curl \
+      git \
+      graphviz \
+      gzip \
+      kmod \
+      language-pack-zh-hans \
+      libgl1 \
+      libglib2.0-0 \
+      libglx-mesa0 \
+      libjpeg-dev \
+      libsm6 \
+      libssl-dev \
+      libtool \
+      libxext6 \
+      libxrender-dev \
+      locales \
+      make \
+      net-tools \
+      ntp \
+      pigz \
+      python3-pip \
+      python3.12 \
+      python3.12-dev \
+      python3.12-venv \
+      swig \
+      tar \
+      unzip \
+      vim \
+      wget \
+      xz-utils \
+      zlib1g-dev \
+      zstd && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY tools/dockerfile/build_scripts /build_scripts
+RUN bash /build_scripts/install_gcc.sh gcc15
+
+ENV GCC15_HOME=/usr/local/gcc-15.2
+ENV PATH=${GCC15_HOME}/bin:$PATH
+ENV LD_LIBRARY_PATH=${GCC15_HOME}/lib64:$LD_LIBRARY_PATH
+
+RUN ln -sf ${GCC15_HOME}/bin/gcc /usr/local/bin/gcc && \
+    ln -sf ${GCC15_HOME}/bin/g++ /usr/local/bin/g++ && \
+    ln -sf ${GCC15_HOME}/bin/gcc /usr/local/bin/cc && \
+    ln -sf ${GCC15_HOME}/bin/g++ /usr/local/bin/c++ && \
+    ln -sf /usr/bin/python3.12 /usr/local/bin/python && \
+    ln -sf /usr/bin/python3.12 /usr/local/bin/python3
+
+RUN bash /build_scripts/install_patchelf.sh && \
+    rm -rf /build_scripts
+
+WORKDIR /home
+RUN wget -q https://bootstrap.pypa.io/get-pip.py && \
+    sed -i 's#"install", "--upgrade", "--force-reinstall"#"install", "--upgrade", "--force-reinstall", "--break-system-packages"#' get-pip.py && \
+    python3.12 get-pip.py && \
+    rm -f get-pip.py
+
+RUN python -m pip config set global.break-system-packages true && \
+    python -m pip install --no-cache-dir setuptools==68.2.0 wheel
+
+COPY ./python/requirements.txt /root/
+COPY ./paddle/scripts/compile_requirements.txt /root/
+RUN python -m pip install --no-cache-dir -r /root/requirements.txt && \
+    python -m pip install --no-cache-dir -r /root/compile_requirements.txt && \
+    rm -f /root/requirements.txt /root/compile_requirements.txt
+
+RUN nvcc --version && \
+    python --version && \
+    python3 --version && \
+    python3.12 --version && \
+    gcc --version && \
+    g++ --version && \
+    cc --version && \
+    c++ --version && \
+    printf '#include <iostream>\nint main() { std::cout << "gcc15-ok\\n"; return 0; }\n' >/tmp/gcc15_smoke.cc && \
+    g++ /tmp/gcc15_smoke.cc -o /tmp/gcc15_smoke && \
+    /tmp/gcc15_smoke && \
+    rm -f /tmp/gcc15_smoke.cc /tmp/gcc15_smoke
+
+EXPOSE 22
