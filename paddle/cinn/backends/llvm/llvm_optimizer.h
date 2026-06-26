@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <stdint.h>
+
 #include <llvm/IR/Instruction.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>

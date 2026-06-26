@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <stdint.h>
+
 #include <llvm/ADT/StringRef.h>
 #include <llvm/ExecutionEngine/MCJIT.h>
 #include <llvm/IR/Argument.h>

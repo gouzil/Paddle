@@ -13,6 +13,9 @@
 // limitations under the License.
 
 #pragma once
+
+#include <stdint.h>
+
 #include "llvm/ADT/SmallVector.h"
 
 namespace cinn::utils {

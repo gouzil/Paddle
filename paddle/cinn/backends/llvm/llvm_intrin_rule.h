@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <stdint.h>
+
 #include <glog/logging.h>
 #include <llvm/IR/Intrinsics.h>
 

@@ -14,6 +14,8 @@
 
 #include "paddle/cinn/backends/llvm/llvm_optimizer.h"
 
+#include <stdint.h>
+
 #include <glog/logging.h>
 #include <llvm/ADT/Triple.h>
 #include <llvm/Analysis/CGSCCPassManager.h>
